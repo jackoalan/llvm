@@ -370,7 +370,7 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
     MCSymbol *PICBase = MF->getPICBaseSymbol();
     
     // Emit the 'bl'.
-    OutStreamer.EmitInstruction(MCInstBuilder(PPC::BL_Darwin) // Darwin vs SVR4 doesn't matter here.
+    OutStreamer.EmitInstruction(MCInstBuilder(PPC::BL)
       // FIXME: We would like an efficient form for this, so we don't have to do
       // a lot of extra uniquing.
       .addExpr(MCSymbolRefExpr::Create(PICBase, OutContext)));
@@ -595,7 +595,7 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
   }
   case PPC::GETtlsADDR: {
     // Transform: %X3 = GETtlsADDR %X3, <ga:@sym>
-    // Into:      BL8_NOP_ELF_TLSGD __tls_get_addr(sym@tlsgd)
+    // Into:      BL8_NOP_TLSGD __tls_get_addr(sym@tlsgd)
     assert(Subtarget.isPPC64() && "Not supported for 32-bit PowerPC");
 
     StringRef Name = "__tls_get_addr";
@@ -608,7 +608,7 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
     const MCExpr *SymVar =
       MCSymbolRefExpr::Create(MOSymbol, MCSymbolRefExpr::VK_PPC_TLSGD,
                               OutContext);
-    OutStreamer.EmitInstruction(MCInstBuilder(PPC::BL8_NOP_ELF_TLSGD)
+    OutStreamer.EmitInstruction(MCInstBuilder(PPC::BL8_NOP_TLSGD)
                                 .addExpr(TlsRef)
                                 .addExpr(SymVar));
     return;
@@ -647,7 +647,7 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
   }
   case PPC::GETtlsldADDR: {
     // Transform: %X3 = GETtlsldADDR %X3, <ga:@sym>
-    // Into:      BL8_NOP_ELF_TLSLD __tls_get_addr(sym@tlsld)
+    // Into:      BL8_NOP_TLSLD __tls_get_addr(sym@tlsld)
     assert(Subtarget.isPPC64() && "Not supported for 32-bit PowerPC");
 
     StringRef Name = "__tls_get_addr";
@@ -660,7 +660,7 @@ void PPCAsmPrinter::EmitInstruction(const MachineInstr *MI) {
     const MCExpr *SymVar =
       MCSymbolRefExpr::Create(MOSymbol, MCSymbolRefExpr::VK_PPC_TLSLD,
                               OutContext);
-    OutStreamer.EmitInstruction(MCInstBuilder(PPC::BL8_NOP_ELF_TLSLD)
+    OutStreamer.EmitInstruction(MCInstBuilder(PPC::BL8_NOP_TLSLD)
                                 .addExpr(TlsRef)
                                 .addExpr(SymVar));
     return;
@@ -911,18 +911,19 @@ EmitFunctionStubs(const MachineModuleInfoMachO::SymbolListTy &Stubs) {
       OutStreamer.EmitLabel(Stub);
       OutStreamer.EmitSymbolAttribute(RawSym, MCSA_IndirectSymbol);
 
+      const MCExpr *Anon = MCSymbolRefExpr::Create(AnonSymbol, OutContext);
+
       // mflr r0
       OutStreamer.EmitInstruction(MCInstBuilder(PPC::MFLR).addReg(PPC::R0));
-      // FIXME: MCize this.
-      OutStreamer.EmitRawText("\tbcl 20, 31, " + Twine(AnonSymbol->getName()));
+      // bcl 20, 31, AnonSymbol
+      OutStreamer.EmitInstruction(MCInstBuilder(PPC::BCL).addExpr(Anon));
       OutStreamer.EmitLabel(AnonSymbol);
       // mflr r11
       OutStreamer.EmitInstruction(MCInstBuilder(PPC::MFLR).addReg(PPC::R11));
       // addis r11, r11, ha16(LazyPtr - AnonSymbol)
       const MCExpr *Sub =
         MCBinaryExpr::CreateSub(MCSymbolRefExpr::Create(LazyPtr, OutContext),
-                                MCSymbolRefExpr::Create(AnonSymbol, OutContext),
-                                OutContext);
+                                Anon, OutContext);
       OutStreamer.EmitInstruction(MCInstBuilder(PPC::ADDIS)
         .addReg(PPC::R11)
         .addReg(PPC::R11)

@@ -16,6 +16,7 @@
 #define LLVM_TARGET_POWERPC_PPC32ISELLOWERING_H
 
 #include "PPC.h"
+#include "PPCRegisterInfo.h"
 #include "PPCSubtarget.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/Target/TargetLowering.h"
@@ -95,12 +96,9 @@ namespace llvm {
       EXTSW_32,
 
       /// CALL - A direct function call.
-      /// CALL_NOP_SVR4 is a call with the special  NOP which follows 64-bit
+      /// CALL_NOP is a call with the special NOP which follows 64-bit
       /// SVR4 calls.
-      CALL_Darwin, CALL_SVR4, CALL_NOP_SVR4,
-
-      /// NOP - Special NOP which follows 64-bit SVR4 calls.
-      NOP,
+      CALL, CALL_NOP,
 
       /// CHAIN,FLAG = MTCTR(VAL, CHAIN[, INFLAG]) - Directly corresponds to a
       /// MTCTR instruction.
@@ -108,7 +106,7 @@ namespace llvm {
 
       /// CHAIN,FLAG = BCTRL(CHAIN, INFLAG) - Directly corresponds to a
       /// BCTRL instruction.
-      BCTRL_Darwin, BCTRL_SVR4,
+      BCTRL,
 
       /// Return with a flag operand, matched by 'blr'
       RET_FLAG,
@@ -118,6 +116,12 @@ namespace llvm {
       /// CRREG into the resultant GPR.  Bits corresponding to other CR regs
       /// are undefined.
       MFCR,
+
+      // EH_SJLJ_SETJMP - SjLj exception handling setjmp.
+      EH_SJLJ_SETJMP,
+
+      // EH_SJLJ_LONGJMP - SjLj exception handling longjmp.
+      EH_SJLJ_LONGJMP,
 
       /// RESVEC = VCMP(LHS, RHS, OPC) - Represents one of the altivec VCMP*
       /// instructions.  For lack of better number, we use the opcode number
@@ -321,6 +325,7 @@ namespace llvm {
 
   class PPCTargetLowering : public TargetLowering {
     const PPCSubtarget &PPCSubTarget;
+    const PPCRegisterInfo *PPCRegInfo;
 
   public:
     explicit PPCTargetLowering(PPCTargetMachine &TM);
@@ -395,6 +400,12 @@ namespace llvm {
                                                 MachineBasicBlock *MBB,
                                             bool is8bit, unsigned Opcode) const;
 
+    MachineBasicBlock *emitEHSjLjSetJmp(MachineInstr *MI,
+                                        MachineBasicBlock *MBB) const;
+
+    MachineBasicBlock *emitEHSjLjLongJmp(MachineInstr *MI,
+                                         MachineBasicBlock *MBB) const;
+
     ConstraintType getConstraintType(const std::string &Constraint) const;
 
     /// Examine constraint string and operand type and determine a weight value.
@@ -448,6 +459,10 @@ namespace llvm {
     getOptimalMemOpType(uint64_t Size, unsigned DstAlign, unsigned SrcAlign, 
                         bool IsMemset, bool ZeroMemset, bool MemcpyStrSrc,
                         MachineFunction &MF) const;
+
+    /// Is unaligned memory access allowed for the given type, and is it fast
+    /// relative to software emulation.
+    virtual bool allowsUnalignedMemoryAccesses(EVT VT, bool *Fast = 0) const;
 
     /// isFMAFasterThanMulAndAdd - Return true if an FMA operation is faster than
     /// a pair of mul and add instructions. fmuladd intrinsics will be expanded to
@@ -604,6 +619,9 @@ namespace llvm {
                      const SmallVectorImpl<ISD::InputArg> &Ins,
                      DebugLoc dl, SelectionDAG &DAG,
                      SmallVectorImpl<SDValue> &InVals) const;
+
+    SDValue lowerEH_SJLJ_SETJMP(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerEH_SJLJ_LONGJMP(SDValue Op, SelectionDAG &DAG) const;
   };
 }
 

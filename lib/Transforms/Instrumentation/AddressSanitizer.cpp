@@ -71,7 +71,7 @@ static const char *kAsanRegisterGlobalsName = "__asan_register_globals";
 static const char *kAsanUnregisterGlobalsName = "__asan_unregister_globals";
 static const char *kAsanPoisonGlobalsName = "__asan_before_dynamic_init";
 static const char *kAsanUnpoisonGlobalsName = "__asan_after_dynamic_init";
-static const char *kAsanInitName = "__asan_init_v1";
+static const char *kAsanInitName = "__asan_init_v3";
 static const char *kAsanHandleNoReturnName = "__asan_handle_no_return";
 static const char *kAsanMappingOffsetName = "__asan_mapping_offset";
 static const char *kAsanMappingScaleName = "__asan_mapping_scale";
@@ -244,7 +244,7 @@ static size_t RedzoneSizeForScale(int MappingScale) {
 
 /// AddressSanitizer: instrument the code in module to find memory bugs.
 struct AddressSanitizer : public FunctionPass {
-  AddressSanitizer(bool CheckInitOrder = false,
+  AddressSanitizer(bool CheckInitOrder = true,
                    bool CheckUseAfterReturn = false,
                    bool CheckLifetime = false,
                    StringRef BlacklistFile = StringRef(),
@@ -315,7 +315,7 @@ struct AddressSanitizer : public FunctionPass {
 
 class AddressSanitizerModule : public ModulePass {
  public:
-  AddressSanitizerModule(bool CheckInitOrder = false,
+  AddressSanitizerModule(bool CheckInitOrder = true,
                          StringRef BlacklistFile = StringRef(),
                          bool ZeroBaseShadow = false)
       : ModulePass(ID),
@@ -531,9 +531,12 @@ static size_t TypeSizeToSizeIndex(uint32_t TypeSize) {
 // Create a constant for Str so that we can pass it to the run-time lib.
 static GlobalVariable *createPrivateGlobalForString(Module &M, StringRef Str) {
   Constant *StrConst = ConstantDataArray::getString(M.getContext(), Str);
-  return new GlobalVariable(M, StrConst->getType(), true,
+  GlobalVariable *GV = new GlobalVariable(M, StrConst->getType(), true,
                             GlobalValue::PrivateLinkage, StrConst,
                             kAsanGenPrefix);
+  GV->setUnnamedAddr(true);  // Ok to merge these.
+  GV->setAlignment(1);  // Strings may not be merged w/o setting align 1.
+  return GV;
 }
 
 static bool GlobalWasGeneratedByAsan(GlobalVariable *G) {
@@ -885,11 +888,12 @@ bool AddressSanitizerModule::runOnModule(Module &M) {
   //   size_t size;
   //   size_t size_with_redzone;
   //   const char *name;
+  //   const char *module_name;
   //   size_t has_dynamic_init;
   // We initialize an array of such structures and pass it to a run-time call.
   StructType *GlobalStructTy = StructType::get(IntptrTy, IntptrTy,
                                                IntptrTy, IntptrTy,
-                                               IntptrTy, NULL);
+                                               IntptrTy, IntptrTy, NULL);
   SmallVector<Constant *, 16> Initializers(n), DynamicInit;
 
 
@@ -900,6 +904,9 @@ bool AddressSanitizerModule::runOnModule(Module &M) {
   // The addresses of the first and last dynamically initialized globals in
   // this TU.  Used in initialization order checking.
   Value *FirstDynamic = 0, *LastDynamic = 0;
+
+  GlobalVariable *ModuleName = createPrivateGlobalForString(
+      M, M.getModuleIdentifier());
 
   for (size_t i = 0; i < n; i++) {
     static const uint64_t kMaxGlobalRedzone = 1 << 18;
@@ -930,11 +937,7 @@ bool AddressSanitizerModule::runOnModule(Module &M) {
         NewTy, G->getInitializer(),
         Constant::getNullValue(RightRedZoneTy), NULL);
 
-    SmallString<2048> DescriptionOfGlobal = G->getName();
-    DescriptionOfGlobal += " (";
-    DescriptionOfGlobal += M.getModuleIdentifier();
-    DescriptionOfGlobal += ")";
-    GlobalVariable *Name = createPrivateGlobalForString(M, DescriptionOfGlobal);
+    GlobalVariable *Name = createPrivateGlobalForString(M, G->getName());
 
     // Create a new global variable with enough space for a redzone.
     GlobalVariable *NewGlobal = new GlobalVariable(
@@ -958,6 +961,7 @@ bool AddressSanitizerModule::runOnModule(Module &M) {
         ConstantInt::get(IntptrTy, SizeInBytes),
         ConstantInt::get(IntptrTy, SizeInBytes + RightRedzoneSize),
         ConstantExpr::getPointerCast(Name, IntptrTy),
+        ConstantExpr::getPointerCast(ModuleName, IntptrTy),
         ConstantInt::get(IntptrTy, GlobalHasDynamicInitializer),
         NULL);
 
@@ -1095,6 +1099,7 @@ bool AddressSanitizer::maybeInsertAsanInitAtFunctionEntry(Function &F) {
 bool AddressSanitizer::runOnFunction(Function &F) {
   if (BL->isIn(F)) return false;
   if (&F == AsanCtorFunction) return false;
+  if (F.getLinkage() == GlobalValue::AvailableExternallyLinkage) return false;
   DEBUG(dbgs() << "ASAN instrumenting:\n" << F << "\n");
   initializeCallbacks(*F.getParent());
 
@@ -1312,10 +1317,10 @@ void FunctionStackPoisoner::poisonStack() {
         ConstantInt::get(IntptrTy, LocalStackSize), OrigStackBase);
   }
 
-  // This string will be parsed by the run-time (DescribeStackAddress).
+  // This string will be parsed by the run-time (DescribeAddressIfStack).
   SmallString<2048> StackDescriptionStorage;
   raw_svector_ostream StackDescription(StackDescriptionStorage);
-  StackDescription << F.getName() << " " << AllocaVec.size() << " ";
+  StackDescription << AllocaVec.size() << " ";
 
   // Insert poison calls for lifetime intrinsics for alloca.
   bool HavePoisonedAllocas = false;
@@ -1348,19 +1353,26 @@ void FunctionStackPoisoner::poisonStack() {
   }
   assert(Pos == LocalStackSize);
 
-  // Write the Magic value and the frame description constant to the redzone.
+  // The left-most redzone has enough space for at least 4 pointers.
+  // Write the Magic value to redzone[0].
   Value *BasePlus0 = IRB.CreateIntToPtr(LocalStackBase, IntptrPtrTy);
   IRB.CreateStore(ConstantInt::get(IntptrTy, kCurrentStackFrameMagic),
                   BasePlus0);
-  Value *BasePlus1 = IRB.CreateAdd(LocalStackBase,
-                                   ConstantInt::get(IntptrTy,
-                                                    ASan.LongSize/8));
-  BasePlus1 = IRB.CreateIntToPtr(BasePlus1, IntptrPtrTy);
+  // Write the frame description constant to redzone[1].
+  Value *BasePlus1 = IRB.CreateIntToPtr(
+    IRB.CreateAdd(LocalStackBase, ConstantInt::get(IntptrTy, ASan.LongSize/8)),
+    IntptrPtrTy);
   GlobalVariable *StackDescriptionGlobal =
       createPrivateGlobalForString(*F.getParent(), StackDescription.str());
   Value *Description = IRB.CreatePointerCast(StackDescriptionGlobal,
                                              IntptrTy);
   IRB.CreateStore(Description, BasePlus1);
+  // Write the PC to redzone[2].
+  Value *BasePlus2 = IRB.CreateIntToPtr(
+    IRB.CreateAdd(LocalStackBase, ConstantInt::get(IntptrTy,
+                                                   2 * ASan.LongSize/8)),
+    IntptrPtrTy);
+  IRB.CreateStore(IRB.CreatePointerCast(&F, IntptrTy), BasePlus2);
 
   // Poison the stack redzones at the entry.
   Value *ShadowBase = ASan.memToShadow(LocalStackBase, IRB);

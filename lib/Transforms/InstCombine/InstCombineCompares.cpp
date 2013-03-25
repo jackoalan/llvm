@@ -443,20 +443,29 @@ FoldCmpLoadFromIndexedGlobal(GetElementPtrInst *GEP, GlobalVariable *GV,
   }
 
 
-  // If a 32-bit or 64-bit magic bitvector captures the entire comparison state
+  // If a magic bitvector captures the entire comparison state
   // of this load, replace it with computation that does:
   //   ((magic_cst >> i) & 1) != 0
-  if (ArrayElementCount <= 32 ||
-      (TD && ArrayElementCount <= 64 && TD->isLegalInteger(64))) {
-    Type *Ty;
-    if (ArrayElementCount <= 32)
+  {
+    Type *Ty = 0;
+
+    // Look for an appropriate type:
+    // - The type of Idx if the magic fits
+    // - The smallest fitting legal type if we have a DataLayout
+    // - Default to i32
+    if (ArrayElementCount <= Idx->getType()->getIntegerBitWidth())
+      Ty = Idx->getType();
+    else if (TD)
+      Ty = TD->getSmallestLegalIntType(Init->getContext(), ArrayElementCount);
+    else if (ArrayElementCount <= 32)
       Ty = Type::getInt32Ty(Init->getContext());
-    else
-      Ty = Type::getInt64Ty(Init->getContext());
-    Value *V = Builder->CreateIntCast(Idx, Ty, false);
-    V = Builder->CreateLShr(ConstantInt::get(Ty, MagicBitvector), V);
-    V = Builder->CreateAnd(ConstantInt::get(Ty, 1), V);
-    return new ICmpInst(ICmpInst::ICMP_NE, V, ConstantInt::get(Ty, 0));
+
+    if (Ty != 0) {
+      Value *V = Builder->CreateIntCast(Idx, Ty, false);
+      V = Builder->CreateLShr(ConstantInt::get(Ty, MagicBitvector), V);
+      V = Builder->CreateAnd(ConstantInt::get(Ty, 1), V);
+      return new ICmpInst(ICmpInst::ICMP_NE, V, ConstantInt::get(Ty, 0));
+    }
   }
 
   return 0;
@@ -1333,13 +1342,14 @@ Instruction *InstCombiner::visitICmpInstWithInstAndIntCst(ICmpInst &ICI,
     }
 
     // Transform (icmp pred iM (shl iM %v, N), CI)
-    // -> (icmp pred i(M-N) (trunc %v iM to i(N-N)), (trunc (CI>>N))
-    // Transform the shl to a trunc if (trunc (CI>>N)) has no loss.
+    // -> (icmp pred i(M-N) (trunc %v iM to i(M-N)), (trunc (CI>>N))
+    // Transform the shl to a trunc if (trunc (CI>>N)) has no loss and M-N.
     // This enables to get rid of the shift in favor of a trunc which can be
     // free on the target. It has the additional benefit of comparing to a
     // smaller constant, which will be target friendly.
     unsigned Amt = ShAmt->getLimitedValue(TypeBits-1);
-    if (Amt != 0 && RHSV.countTrailingZeros() >= Amt) {
+    if (LHSI->hasOneUse() &&
+        Amt != 0 && RHSV.countTrailingZeros() >= Amt) {
       Type *NTy = IntegerType::get(ICI.getContext(), TypeBits - Amt);
       Constant *NCI = ConstantExpr::getTrunc(
                         ConstantExpr::getAShr(RHS,
