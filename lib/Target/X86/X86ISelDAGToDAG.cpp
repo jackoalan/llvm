@@ -444,7 +444,9 @@ void X86DAGToDAGISel::PreprocessISelDAG() {
     SDNode *N = I++;  // Preincrement iterator to avoid invalidation issues.
 
     if (OptLevel != CodeGenOpt::None &&
-        (N->getOpcode() == X86ISD::CALL ||
+        // Only does this when target favors doesn't favor register indirect
+        // call.
+        ((N->getOpcode() == X86ISD::CALL && !Subtarget->callRegIndirect()) ||
          (N->getOpcode() == X86ISD::TC_RETURN &&
           // Only does this if load can be folded into TC_RETURN.
           (Subtarget->is64Bit() ||
@@ -1718,7 +1720,7 @@ SDNode *X86DAGToDAGISel::SelectAtomicLoadArith(SDNode *Node, EVT NVT) {
       Op = ADD;
       break;
   }
-  
+
   Val = getAtomicLoadArithTargetConstant(CurDAG, dl, Op, NVT, Val);
   bool isUnOp = !Val.getNode();
   bool isCN = Val.getNode() && (Val.getOpcode() == ISD::TargetConstant);
@@ -2340,6 +2342,9 @@ SDNode *X86DAGToDAGISel::Select(SDNode *Node) {
       ReplaceUses(SDValue(Node, 1), ResHi);
       DEBUG(dbgs() << "=> "; ResHi.getNode()->dump(CurDAG); dbgs() << '\n');
     }
+
+    // Propagate ordering to the last node, for now.
+    CurDAG->AssignOrdering(InFlag.getNode(), CurDAG->GetOrdering(Node));
 
     return NULL;
   }

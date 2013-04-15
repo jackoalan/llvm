@@ -42,7 +42,7 @@ class RegScavenger {
 
   /// Information on scavenged registers (held in a spill slot).
   struct ScavengedInfo {
-    ScavengedInfo(int FI) : FrameIndex(FI), Reg(0), Restore(NULL) {}
+    ScavengedInfo(int FI = -1) : FrameIndex(FI), Reg(0), Restore(NULL) {}
 
     /// A spill slot used for scavenging a register post register allocation.
     int FrameIndex;
@@ -93,9 +93,25 @@ public:
     while (MBBI != I) forward();
   }
 
+  /// Invert the behavior of forward() on the current instruction (undo the
+  /// changes to the available registers made by forward()).
+  void unprocess();
+
+  /// Unprocess instructions until you reach the provided iterator.
+  void unprocess(MachineBasicBlock::iterator I) {
+    while (MBBI != I) unprocess();
+  }
+
   /// skipTo - Move the internal MBB iterator but do not update register states.
-  ///
-  void skipTo(MachineBasicBlock::iterator I) { MBBI = I; }
+  void skipTo(MachineBasicBlock::iterator I) {
+    if (I == MachineBasicBlock::iterator(NULL))
+      Tracking = false;
+    MBBI = I;
+  }
+
+  MachineBasicBlock::iterator getCurrentPosition() const {
+    return MBBI;
+  }
 
   /// getRegsUsed - return all registers currently in use in used.
   void getRegsUsed(BitVector &used, bool includeReserved);
@@ -127,7 +143,8 @@ public:
   void getScavengingFrameIndices(SmallVectorImpl<int> &A) const {
     for (SmallVector<ScavengedInfo, 2>::const_iterator I = Scavenged.begin(),
          IE = Scavenged.end(); I != IE; ++I)
-      A.push_back(I->FrameIndex);
+      if (I->FrameIndex >= 0)
+        A.push_back(I->FrameIndex);
   }
 
   /// scavengeRegister - Make a register of the specific register class
@@ -166,6 +183,10 @@ private:
   void setUnused(BitVector &Regs) {
     RegsAvailable |= Regs;
   }
+
+  /// Processes the current instruction and fill the KillRegs and DefRegs bit
+  /// vectors.
+  void determineKillsAndDefs();
 
   /// Add Reg and all its sub-registers to BV.
   void addRegWithSubRegs(BitVector &BV, unsigned Reg);

@@ -110,6 +110,65 @@ void RegScavenger::addRegWithSubRegs(BitVector &BV, unsigned Reg) {
     BV.set(*SubRegs);
 }
 
+void RegScavenger::determineKillsAndDefs() {
+  assert(Tracking && "Must be tracking to determine kills and defs");
+
+  MachineInstr *MI = MBBI;
+  assert(!MI->isDebugValue() && "Debug values have no kills or defs");
+
+  // Find out which registers are early clobbered, killed, defined, and marked
+  // def-dead in this instruction.
+  // FIXME: The scavenger is not predication aware. If the instruction is
+  // predicated, conservatively assume "kill" markers do not actually kill the
+  // register. Similarly ignores "dead" markers.
+  bool isPred = TII->isPredicated(MI);
+  KillRegs.reset();
+  DefRegs.reset();
+  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = MI->getOperand(i);
+    if (MO.isRegMask())
+      (isPred ? DefRegs : KillRegs).setBitsNotInMask(MO.getRegMask());
+    if (!MO.isReg())
+      continue;
+    unsigned Reg = MO.getReg();
+    if (!Reg || TargetRegisterInfo::isVirtualRegister(Reg) || isReserved(Reg))
+      continue;
+
+    if (MO.isUse()) {
+      // Ignore undef uses.
+      if (MO.isUndef())
+        continue;
+      if (!isPred && MO.isKill())
+        addRegWithSubRegs(KillRegs, Reg);
+    } else {
+      assert(MO.isDef());
+      if (!isPred && MO.isDead())
+        addRegWithSubRegs(KillRegs, Reg);
+      else
+        addRegWithSubRegs(DefRegs, Reg);
+    }
+  }
+}
+
+void RegScavenger::unprocess() {
+  assert(Tracking && "Cannot unprocess because we're not tracking");
+
+  MachineInstr *MI = MBBI;
+  if (!MI->isDebugValue()) {
+    determineKillsAndDefs();
+
+    // Commit the changes.
+    setUsed(KillRegs);
+    setUnused(DefRegs);
+  }
+
+  if (MBBI == MBB->begin()) {
+    MBBI = MachineBasicBlock::iterator(NULL);
+    Tracking = false;
+  } else
+    --MBBI;
+}
+
 void RegScavenger::forward() {
   // Move ptr forward.
   if (!Tracking) {
@@ -135,38 +194,7 @@ void RegScavenger::forward() {
   if (MI->isDebugValue())
     return;
 
-  // Find out which registers are early clobbered, killed, defined, and marked
-  // def-dead in this instruction.
-  // FIXME: The scavenger is not predication aware. If the instruction is
-  // predicated, conservatively assume "kill" markers do not actually kill the
-  // register. Similarly ignores "dead" markers.
-  bool isPred = TII->isPredicated(MI);
-  KillRegs.reset();
-  DefRegs.reset();
-  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
-    const MachineOperand &MO = MI->getOperand(i);
-    if (MO.isRegMask())
-      (isPred ? DefRegs : KillRegs).setBitsNotInMask(MO.getRegMask());
-    if (!MO.isReg())
-      continue;
-    unsigned Reg = MO.getReg();
-    if (!Reg || isReserved(Reg))
-      continue;
-
-    if (MO.isUse()) {
-      // Ignore undef uses.
-      if (MO.isUndef())
-        continue;
-      if (!isPred && MO.isKill())
-        addRegWithSubRegs(KillRegs, Reg);
-    } else {
-      assert(MO.isDef());
-      if (!isPred && MO.isDead())
-        addRegWithSubRegs(KillRegs, Reg);
-      else
-        addRegWithSubRegs(DefRegs, Reg);
-    }
-  }
+  determineKillsAndDefs();
 
   // Verify uses and defs.
 #ifndef NDEBUG
@@ -175,7 +203,7 @@ void RegScavenger::forward() {
     if (!MO.isReg())
       continue;
     unsigned Reg = MO.getReg();
-    if (!Reg || isReserved(Reg))
+    if (!Reg || TargetRegisterInfo::isVirtualRegister(Reg) || isReserved(Reg))
       continue;
     if (MO.isUse()) {
       if (MO.isUndef())
@@ -371,8 +399,11 @@ unsigned RegScavenger::scavengeRegister(const TargetRegisterClass *RC,
     if (Scavenged[SI].Reg == 0)
       break;
 
-  assert(SI < Scavenged.size() &&
-         "Scavenger slots are live, unable to scavenge another register!");
+  if (SI == Scavenged.size()) {
+    // We need to scavenge a register but have no spill slot, the target
+    // must know how to do it (if not, we'll assert below).
+    Scavenged.push_back(ScavengedInfo());
+  }
 
   // Avoid infinite regress
   Scavenged[SI].Reg = SReg;
