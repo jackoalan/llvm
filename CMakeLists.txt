@@ -11,7 +11,7 @@ set(CMAKE_MODULE_PATH
   )
 
 set(LLVM_VERSION_MAJOR 3)
-set(LLVM_VERSION_MINOR 3)
+set(LLVM_VERSION_MINOR 4)
 
 set(PACKAGE_VERSION "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}svn")
 
@@ -79,17 +79,18 @@ set(LLVM_ALL_TARGETS
   CppBackend
   Hexagon
   Mips
-  MBlaze
   MSP430
   NVPTX
   PowerPC
+  R600
   Sparc
+  SystemZ
   X86
   XCore
   )
 
 # List of targets with JIT support:
-set(LLVM_TARGETS_WITH_JIT X86 PowerPC ARM Mips)
+set(LLVM_TARGETS_WITH_JIT X86 PowerPC AArch64 ARM Mips SystemZ)
 
 set(LLVM_TARGETS_TO_BUILD "all"
     CACHE STRING "Semicolon-separated list of targets to build, or \"all\".")
@@ -124,6 +125,8 @@ set(LLVM_TARGET_ARCH "host"
 
 option(LLVM_ENABLE_THREADS "Use threads if available." ON)
 
+option(LLVM_ENABLE_ZLIB "Use zlib for compression/decompression if available." ON)
+
 if( LLVM_TARGETS_TO_BUILD STREQUAL "all" )
   set( LLVM_TARGETS_TO_BUILD ${LLVM_ALL_TARGETS} )
 endif()
@@ -131,18 +134,7 @@ endif()
 set(LLVM_TARGETS_TO_BUILD
    ${LLVM_TARGETS_TO_BUILD}
    ${LLVM_EXPERIMENTAL_TARGETS_TO_BUILD})
-
-set(LLVM_ENUM_TARGETS "")
-foreach(c ${LLVM_TARGETS_TO_BUILD})
-  list(FIND LLVM_ALL_TARGETS ${c} idx)
-  list(FIND LLVM_EXPERIMENTAL_TARGETS_TO_BUILD ${c} idy)
-  if( idx LESS 0 AND idy LESS 0 )
-    message(FATAL_ERROR "The target `${c}' does not exist.
-    It should be one of\n${LLVM_ALL_TARGETS}")
-  else()
-    set(LLVM_ENUM_TARGETS "${LLVM_ENUM_TARGETS}LLVM_TARGET(${c})\n")
-  endif()
-endforeach(c)
+list(REMOVE_DUPLICATES LLVM_TARGETS_TO_BUILD)
 
 set(llvm_builded_incs_dir ${LLVM_BINARY_DIR}/include/llvm)
 
@@ -160,7 +152,7 @@ endif()
 option(LLVM_ENABLE_PEDANTIC "Compile with pedantic enabled." ON)
 option(LLVM_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
 
-if( uppercase_CMAKE_BUILD_TYPE STREQUAL "RELEASE" )
+if( NOT uppercase_CMAKE_BUILD_TYPE STREQUAL "DEBUG" )
   option(LLVM_ENABLE_ASSERTIONS "Enable assertions" OFF)
 else()
   option(LLVM_ENABLE_ASSERTIONS "Enable assertions" ON)
@@ -190,6 +182,9 @@ endif( LLVM_USE_OPROFILE )
 
 set(LLVM_USE_SANITIZER "" CACHE STRING
   "Define the sanitizer used to build binaries and tests.")
+
+option(LLVM_USE_SPLIT_DWARF
+  "Use -gsplit-dwarf when compiling llvm." OFF)
 
 # Define an option controlling whether we should build for 32-bit on 64-bit
 # platforms, where supported.
@@ -245,7 +240,8 @@ set(TARGET_TRIPLE "${LLVM_DEFAULT_TARGET_TRIPLE}")
 
 include(HandleLLVMOptions)
 
-# Verify that we can find a Python interpreter,
+# Verify that we can find a Python 2 interpreter.  Python 3 is unsupported.
+set(Python_ADDITIONAL_VERSIONS 2.7 2.6 2.5 2.4)
 include(FindPythonInterp)
 if( NOT PYTHONINTERP_FOUND )
   message(FATAL_ERROR
@@ -316,11 +312,22 @@ include(${LLVMBUILDCMAKEFRAG})
 
 # Configure all of the various header file fragments LLVM uses which depend on
 # configuration variables.
+set(LLVM_ENUM_TARGETS "")
 set(LLVM_ENUM_ASM_PRINTERS "")
 set(LLVM_ENUM_ASM_PARSERS "")
 set(LLVM_ENUM_DISASSEMBLERS "")
 foreach(t ${LLVM_TARGETS_TO_BUILD})
   set( td ${LLVM_MAIN_SRC_DIR}/lib/Target/${t} )
+
+  list(FIND LLVM_ALL_TARGETS ${t} idx)
+  list(FIND LLVM_EXPERIMENTAL_TARGETS_TO_BUILD ${t} idy)
+  if( idx LESS 0 AND idy LESS 0 )
+    message(FATAL_ERROR "The target `${t}' does not exist.
+    It should be one of\n${LLVM_ALL_TARGETS}")
+  else()
+    set(LLVM_ENUM_TARGETS "${LLVM_ENUM_TARGETS}LLVM_TARGET(${t})\n")
+  endif()
+
   file(GLOB asmp_file "${td}/*AsmPrinter.cpp")
   if( asmp_file )
     set(LLVM_ENUM_ASM_PRINTERS

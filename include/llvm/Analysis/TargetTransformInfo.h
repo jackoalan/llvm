@@ -171,6 +171,12 @@ public:
   /// comments for a detailed explanation of the cost values.
   virtual unsigned getUserCost(const User *U) const;
 
+  /// \brief hasBranchDivergence - Return true if branch divergence exists.
+  /// Branch divergence has a significantly negative impact on GPU performance
+  /// when threads in the same wavefront take different paths due to conditional
+  /// branches.
+  virtual bool hasBranchDivergence() const;
+
   /// \brief Test whether calls to a function lower to actual program function
   /// calls.
   ///
@@ -224,6 +230,16 @@ public:
   virtual bool isLegalAddressingMode(Type *Ty, GlobalValue *BaseGV,
                                      int64_t BaseOffset, bool HasBaseReg,
                                      int64_t Scale) const;
+
+  /// \brief Return the cost of the scaling factor used in the addressing
+  /// mode represented by AM for this target, for a load/store
+  /// of the specified type.
+  /// If the AM is supported, the return value must be >= 0.
+  /// If the AM is not supported, it returns a negative value.
+  /// TODO: Handle pre/postinc as well.
+  virtual int getScalingFactorCost(Type *Ty, GlobalValue *BaseGV,
+                                   int64_t BaseOffset, bool HasBaseReg,
+                                   int64_t Scale) const;
 
   /// isTruncateFree - Return true if it's free to truncate a value of
   /// type Ty1 to type Ty2. e.g. On x86 it's free to truncate a i32 value in
@@ -329,7 +345,11 @@ public:
   /// merged into the instruction indexing mode. Some targets might want to
   /// distinguish between address computation for memory operations on vector
   /// types and scalar types. Such targets should override this function.
-  virtual unsigned getAddressComputationCost(Type *Ty) const;
+  /// The 'IsComplex' parameter is a hint that the address computation is likely
+  /// to involve multiple instructions and as such unlikely to be merged into
+  /// the address indexing mode.
+  virtual unsigned getAddressComputationCost(Type *Ty,
+                                             bool IsComplex = false) const;
 
   /// @}
 

@@ -16,10 +16,10 @@
 
 #include "llvm/ADT/StringMap.h"
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__GNU__)
 #include <endian.h>
 #else
-#ifndef _MSC_VER
+#if !defined(BYTE_ORDER) && !defined(LLVM_ON_WIN32)
 #include <machine/endian.h>
 #endif
 #endif
@@ -29,7 +29,7 @@
 namespace llvm {
 namespace sys {
 
-#if BYTE_ORDER == BIG_ENDIAN
+#if defined(BYTE_ORDER) && defined(BIG_ENDIAN) && BYTE_ORDER == BIG_ENDIAN
   static const bool IsBigEndianHost = true;
 #else
   static const bool IsBigEndianHost = false;

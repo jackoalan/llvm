@@ -88,6 +88,10 @@ unsigned TargetTransformInfo::getUserCost(const User *U) const {
   return PrevTTI->getUserCost(U);
 }
 
+bool TargetTransformInfo::hasBranchDivergence() const {
+  return PrevTTI->hasBranchDivergence();
+}
+
 bool TargetTransformInfo::isLoweredToCall(const Function *F) const {
   return PrevTTI->isLoweredToCall(F);
 }
@@ -106,6 +110,14 @@ bool TargetTransformInfo::isLegalAddressingMode(Type *Ty, GlobalValue *BaseGV,
                                                 int64_t Scale) const {
   return PrevTTI->isLegalAddressingMode(Ty, BaseGV, BaseOffset, HasBaseReg,
                                         Scale);
+}
+
+int TargetTransformInfo::getScalingFactorCost(Type *Ty, GlobalValue *BaseGV,
+                                              int64_t BaseOffset,
+                                              bool HasBaseReg,
+                                              int64_t Scale) const {
+  return PrevTTI->getScalingFactorCost(Ty, BaseGV, BaseOffset, HasBaseReg,
+                                       Scale);
 }
 
 bool TargetTransformInfo::isTruncateFree(Type *Ty1, Type *Ty2) const {
@@ -198,8 +210,9 @@ unsigned TargetTransformInfo::getNumberOfParts(Type *Tp) const {
   return PrevTTI->getNumberOfParts(Tp);
 }
 
-unsigned TargetTransformInfo::getAddressComputationCost(Type *Tp) const {
-  return PrevTTI->getAddressComputationCost(Tp);
+unsigned TargetTransformInfo::getAddressComputationCost(Type *Tp,
+                                                        bool IsComplex) const {
+  return PrevTTI->getAddressComputationCost(Tp, IsComplex);
 }
 
 namespace {
@@ -411,6 +424,8 @@ struct NoTTI : ImmutablePass, TargetTransformInfo {
                                 U->getOperand(0)->getType() : 0);
   }
 
+  bool hasBranchDivergence() const { return false; }
+
   bool isLoweredToCall(const Function *F) const {
     // FIXME: These should almost certainly not be handled here, and instead
     // handled with the help of TLI or the target itself. This was largely
@@ -456,6 +471,15 @@ struct NoTTI : ImmutablePass, TargetTransformInfo {
     // the implementation of LSR.
     return !BaseGV && BaseOffset == 0 && Scale <= 1;
   }
+
+  int getScalingFactorCost(Type *Ty, GlobalValue *BaseGV, int64_t BaseOffset,
+                           bool HasBaseReg, int64_t Scale) const {
+    // Guess that all legal addressing mode are free.
+    if(isLegalAddressingMode(Ty, BaseGV, BaseOffset, HasBaseReg, Scale))
+      return 0;
+    return -1;
+  }
+
 
   bool isTruncateFree(Type *Ty1, Type *Ty2) const {
     return false;
@@ -542,7 +566,7 @@ struct NoTTI : ImmutablePass, TargetTransformInfo {
     return 0;
   }
 
-  unsigned getAddressComputationCost(Type *Tp) const {
+  unsigned getAddressComputationCost(Type *Tp, bool) const {
     return 0;
   }
 };
